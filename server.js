@@ -20,7 +20,7 @@ function parseEnvList(env) {
 var checkRateLimit = require('./lib/rate-limit')(process.env.CORSANYWHERE_RATELIMIT);
 
 var cors_proxy = require('./lib/cors-anywhere');
-cors_proxy.createServer({
+var server = cors_proxy.createServer({
   originBlacklist: originBlacklist,
   originWhitelist: originWhitelist,
   requireHeader: ['origin', 'x-requested-with'],
@@ -43,7 +43,23 @@ cors_proxy.createServer({
   httpProxyOptions: {
     // Do not add X-Forwarded-For, etc. headers, because Heroku already adds it.
     xfwd: false,
+    // Reap stalled origin connections: without these, an origin that stops
+    // responding leaves the proxied socket open forever.
+    timeout: 120000,
+    proxyTimeout: 120000,
   },
-}).listen(port, host, function() {
+});
+
+// Idle/aborted sockets MUST be reaped: each dead socket pins its buffered
+// data in kernel TCP memory, and once the box-wide tcp_mem ceiling is hit
+// the kernel clamps EVERY connection on the host to a crawl (July 2026
+// incident: ~2k leaked sockets held 715MB and throttled the whole server to
+// KB/s until a restart). 120s covers slow origin streams; nothing legitimate
+// idles longer than that through a CORS proxy.
+server.setTimeout(120000, function(socket) {
+  socket.destroy();
+});
+
+server.listen(port, host, function() {
   console.log('Running CORS Anywhere on ' + host + ':' + port);
 });
